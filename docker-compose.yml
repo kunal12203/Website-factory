@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: website_factory_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app # Sync local code changes with the container
+      - ./output:/app/output   # Persist the generated websites outside the container
+    env_file:
+      - ./backend/.env
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Optional: Service definition for the frontend control panel
+  # frontend:
+  #   build: ./frontend
+  #   container_name: website_factory_frontend
+  #   ports:
+  #     - "3000:3000"
+  #   volumes:
+  #     - ./frontend:/app
+  #   environment:
+  #     - NEXT_PUBLIC_API_URL=http://backend:8000
