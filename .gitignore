@@ -1,41 +1,43 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# --- Python Virtual Environment ---
+# Never commit your virtual environment
+backend/venv/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# --- Python Cache ---
+__pycache__/
+*.pyc
 
-# testing
-/coverage
+# --- Node.js Dependencies ---
+# Never commit dependencies, they are installed via package.json
+node_modules/
+frontend/node_modules/
+backend/golden_scaffold/node_modules/
 
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
+# --- Build Artifacts & Logs ---
+.next/
+frontend/.next/
+backend/golden_scaffold/.next/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# --- Project-Specific Ignores ---
+# The directory where generated websites are stored
+backend/output/
 
-# vercel
-.vercel
+# The local database file (if using SQLite)
+backend/knowledge_base.db
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# Environment variables and secrets - NEVER commit these!
+.env
+backend/.env
+# NOTE: It's a best practice to create a .env.example file with placeholder values.
+
+# --- Operating System & IDE Files ---
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# JetBrains (PyCharm, WebStorm)
+.idea/
