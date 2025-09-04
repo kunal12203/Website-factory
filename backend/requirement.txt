@@ -6,3 +6,6 @@ python-dotenv
 playwright
 pydantic
 pydantic-settings
+anthropic
+aiofiles
+mysql-connector-python

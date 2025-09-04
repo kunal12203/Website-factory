@@ -1,6 +1,8 @@
-# backend/app/models/checklist.py
+# backend/app/models.py
 from pydantic import BaseModel
 from typing import List, Dict, Any
+
+# --- Models for User Input (from Frontend) ---
 
 class Section(BaseModel):
     component: str

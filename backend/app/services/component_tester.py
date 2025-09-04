@@ -1,51 +1,73 @@
 # backend/app/services/component_tester.py
 import asyncio
 import os
-import re
 
-async def run_command(command: str, cwd: str) -> tuple[bool, str]:
-    print(f"Executing in '{cwd}': $ {command}")
-    
+
+async def run_command_stream(cmd: str, cwd: str):
+    """
+    Run a shell command asynchronously and capture logs.
+    Returns (success: bool, logs: str)
+    """
     process = await asyncio.create_subprocess_shell(
-        command, cwd=cwd,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        cmd,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
     )
+
     stdout, stderr = await process.communicate()
-    output = f"STDOUT:\n{stdout.decode()}\n\nSTDERR:\n{stderr.decode()}"
-    return process.returncode == 0, output
+    logs = stdout.decode() + "\n" + stderr.decode()
+    success = process.returncode == 0
 
-def parse_jest_errors(jest_output: str) -> list[dict]:
-    # ... (this function remains the same)
-    failures = []
-    fail_pattern = re.compile(r"FAIL\s+((?:src|components).+?\.test\.tsx)(.*?)(?=FAIL\s+src|Test Suites:)", re.DOTALL)
-    matches = fail_pattern.finditer(jest_output)
-    for match in matches:
-        file_path, error_details = match.groups()
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0?]*[ -/]*[@-~])')
-        cleaned_details = ansi_escape.sub('', error_details.strip())
-        failures.append({"file": file_path.strip(), "error": cleaned_details})
-    return failures
+    return success, logs
 
-async def install_and_test_components(output_dir: str) -> tuple[bool, list[dict]]:
-    print("--- Running Component Tests ---")
-    print("Installing dependencies for Jest...")
-    deps_command = 'npm install next react react-dom jest @testing-library/react @testing-library/jest-dom jest-environment-jsdom @types/jest'
+
+async def install_dependencies(output_dir: str):
+    """
+    Install dependencies for the generated project.
+    (npm install --force to avoid peer dep issues)
+    """
+    print("📦 Installing dependencies...")
+    return await run_command_stream("npm install --force", cwd=output_dir)
+
+
+async def run_component_tests(output_dir: str):
+    """
+    Run Jest component tests.
+    Returns (success: bool, logs: str)
+    """
+    print("🧪 Running component tests (Jest)...")
+    return await run_command_stream("npm test -- --runInBand", cwd=output_dir)
+
+# Add this new function to the file
+async def run_single_component_test(output_dir: str, test_file_path: str):
+    """
+    Run a single Jest test file.
+    """
+    print(f"🔬 Running single test: {test_file_path}")
+    # The command runs jest and specifies the single test file to run
+    return await run_command_stream(f"npm test -- {test_file_path}", cwd=output_dir)
+
+
+# In backend/app/services/component_tester.py
+
+async def reset_node_modules(output_dir: str):
+    """
+    Deletes node_modules and package-lock.json, then runs a fresh npm install.
+    This is a powerful reset step for fixing corrupted dependency issues.
+    """
+    print(" Bashing node_modules and package-lock.json to fix dependency issues...")
     
-    # --- THIS LINE IS MODIFIED ---
-    # Added @tailwindcss/postcss to solve the build error.
-    dev_deps_command = 'npm install --save-dev typescript ts-jest @types/node @types/react @types/react-dom postcss autoprefixer tailwindcss @tailwindcss/postcss eslint eslint-config-next'
+    # Use '&&' to chain commands safely. The '|| true' handles cases where a file might not exist.
+    reset_command = (
+        "rm -rf node_modules package-lock.json || true && "
+        "npm cache clean --force || true && "
+        "npm install"
+    )
     
-    await run_command('npm init -y', cwd=output_dir)
-    await run_command(deps_command, cwd=output_dir)
-    await run_command(dev_deps_command, cwd=output_dir)
-
-    print("Running Jest tests...")
-    success, output = await run_command('npm test', cwd=output_dir)
+    success, logs = await run_command_stream(reset_command, cwd=output_dir)
     if not success:
-        print("\n--- JEST TEST FAILURE DETAILS ---")
-        print(output)
-        print("-----------------------------------\n")
-        
-        failures = parse_jest_errors(output)
-        return False, failures if failures else [{"file": "Unknown", "error": output}]
-    return True, []
+        print(f"  Failed to reset node modules. Logs:\n{logs}")
+    else:
+        print("  Node modules have been successfully reset.")
+    return success
