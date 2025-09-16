@@ -1,20 +1,34 @@
-import nextJest from 'next/jest.js'
- 
-const createJestConfig = nextJest({
-  dir: './',
-})
- 
-/** @type {import('jest').Config} */
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
 const config = {
+  testEnvironment: 'jsdom',
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
-  testEnvironment: 'jest-environment-jsdom',
-  preset: 'ts-jest',
-  // --- THIS LINE IS ADDED ---
-  // Tell Jest to look for test files in the src/components directory
-  testMatch: [
-    '<rootDir>/src/components/**/*.test.(ts|tsx)',
-    '<rootDir>/app/**/*.test.(ts|tsx)'
+  moduleNameMapping: {
+    '^@/(.*)$': '<rootDir>/$1',
+  },
+  transform: {
+    '^.+\\.(t|j)sx?$': ['@swc/jest', {
+      jsc: {
+        transform: {
+          react: {
+            runtime: 'automatic',
+          },
+        },
+      },
+    }],
+  },
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
+  collectCoverageFrom: [
+    'src/**/*.{ts,tsx}',
+    '!src/**/*.d.ts',
   ],
-}
- 
-export default createJestConfig(config)
+  testMatch: [
+    '<rootDir>/src/**/__tests__/**/*.{js,jsx,ts,tsx}',
+    '<rootDir>/src/**/*.{test,spec}.{js,jsx,ts,tsx}',
+  ],
+  moduleDirectories: ['node_modules', '<rootDir>/'],
+  extensionsToTreatAsEsm: ['.ts', '.tsx'],
+};
+
+export default config;

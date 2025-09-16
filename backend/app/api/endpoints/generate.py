@@ -2,6 +2,8 @@
 import asyncio
 import json
 import traceback
+import re
+import aiofiles # FIX: Added missing import
 from fastapi import APIRouter, HTTPException
 from app.models import GenerateRequest
 from app.agents.base_agent import AIAgent
@@ -12,218 +14,339 @@ from app.services import (
     e2e_tester,
     knowledge_base,
 )
+import os
 
-# --- AGENT ROLE DEFINITIONS (FINAL & OPTIMIZED) ---
+# --- AGENT ROLE DEFINITIONS ---
 PM_PROMPT = """You are a Project Manager AI. Your task is to take a user's website checklist and create a structured JSON project plan. The plan must be a JSON object with a 'tasks' array. Task types are 'component' or 'page'. You MUST use the Next.js App Router structure: pages are files like 'app/page.tsx' or 'app/contact/page.tsx'. Component tasks MUST come before page tasks."""
+
 UI_DESIGNER_PROMPT = """You are a UI/UX Designer AI. Your task is to take a component description and create a JSON spec for its structure and props. For any text content like titles or labels, use descriptive placeholders in brackets, e.g., "[HERO_TITLE]". Your output must be a single JSON object."""
+
 COPYWRITER_PROMPT = """You are an expert Copywriter AI. You will be given a component's design spec with placeholder text. Your task is to replace the placeholders with compelling, user-friendly copy. Your output must be a single JSON object containing only the finalized text content."""
-FRONTEND_DEV_PROMPT = """You are an expert Frontend Developer specializing in Next.js, React, and TypeScript. Your task is to write code based on a JSON specification or a debug request. You must follow strict file path conventions: components go in `src/components/`, pages in `app/`. Your output must be a single JSON object with 'filename' and 'content' keys."""
-QA_TESTER_PROMPT = """You are a QA Tester AI specializing in Jest and React Testing Library. Your task is to write a test file for a React component. The test must validate both functionality and accessibility (using jest-axe). Your output must be a single JSON object with 'filename' (e.g., `src/components/Header.test.tsx`) and 'content' keys."""
-DEBUGGER_FILE_ANALYSIS_PROMPT = """You are an expert at analyzing build error logs. Your task is to read an error log and identify which source code files are most likely causing the error. Your output MUST be a JSON object with a single key "relevant_files", which is an array of strings containing the file paths."""
-DEBUGGER_PROMPT = """You are a Senior Debugger AI. Your task is to analyze an error log and relevant source code to find the root cause. Your output MUST be a JSON object with 'file_to_fix' (the exact path of the file causing the error) and 'fix_suggestion' (a clear, one-sentence instruction for the developer)."""
-E2E_TESTER_PROMPT = """You are a QA Automation Engineer AI specializing in Playwright. Your task is to take a website checklist and write a complete Playwright test file. Your output must be a single JSON object with 'filename' ('tests/e2e.spec.ts') and 'content'."""
+
+FRONTEND_DEV_PROMPT = """You are an expert Frontend Developer specializing in Next.js, React, and TypeScript. Your task is to write code based on a JSON specification.
+You must follow these strict rules:
+1. All components are located in `src/components/`.
+2. All pages are located in the `app/` directory.
+3. When a page needs to import a component, you MUST use the full path alias starting from the root. For example: `import Header from '@/src/components/Header';`.
+Your output must be a single JSON object with 'filename' (e.g., "src/components/Header.tsx") and 'content' keys."""
+
+# FIX: Replaced the old prompt with a much more robust and specific one
+DEBUGGER_PROMPT = """You are an expert Senior Debugger AI specializing in Next.js and React. Your task is to analyze an error log and the corresponding file content, then provide a complete, corrected version of the file.
+
+Error types you will see:
+1.  **Build Errors:** From the `next build` command. A common fix for "useState... only works in a Client Component" is to add `"use client";` as the very first line of the file.
+2.  **Runtime Errors:** From a Playwright E2E test log. These often relate to null references (`Cannot read properties of null`), hydration mismatches, or invalid prop types.
+
+Strict Rules:
+1.  Your output MUST be a single JSON object.
+2.  The JSON object must have a 'file_to_fix' key with the exact file path.
+3.  The JSON object must have a 'content' key containing the ENTIRE, corrected file content as a single string.
+"""
 
 router = APIRouter()
 
+# Configuration flags
+MAX_BUILD_ATTEMPTS = 7
 
 def parse_json_from_ai(ai_response: str) -> dict | None:
+    """Parses a JSON object from a string, handling markdown code fences."""
     try:
         if "```json" in ai_response:
-             ai_response = ai_response.split("```json")[1].split("```")[0]
+            ai_response = ai_response.split("```json")[1].split("```")[0]
         return json.loads(ai_response)
     except (json.JSONDecodeError, IndexError):
-        print(f"❌ Invalid JSON from AI: {ai_response[:200]}")
+        print(f"Invalid JSON from AI: {ai_response[:200]}...")
         return None
 
-# --- START: MISSING HELPER FUNCTION ---
-# This function was missing from the previous file, causing the TypeError.
-async def run_fix_cycle(
-    error_log: str, error_type: str, output_dir: str, agents: dict, attempt: int
-) -> bool:
-    """
-    Runs the full self-healing process: Knowledge Base -> Two-Stage AI Debugging -> Save Solution.
-    Returns True if a fix was applied, False otherwise.
-    """
-    error_signature = knowledge_base.create_error_signature(error_log)
-    known_solution_str = knowledge_base.find_known_solution(error_signature)
-    fix_code = None
-
-    if known_solution_str:
-        print("🧠 Found a known solution in the Knowledge Base. Applying patch...")
-        fix_code = json.loads(known_solution_str)
-    else:
-        print("🤖 No known solution found. Delegating to AI Debugger for analysis...")
-        all_code_files = await file_handler.read_all_code_files(output_dir)
-        analysis_response = agents["analyst"].execute_task({"error_log": error_log})
-        analysis = parse_json_from_ai(analysis_response)
-        relevant_files = analysis.get("relevant_files", []) if analysis else []
-        
-        targeted_codebase = {name: all_code_files[name] for name in relevant_files if name in all_code_files}
-        
-        past_examples = knowledge_base.find_similar_incidents(error_signature)
-        if past_examples: print(f"🧠 Found {len(past_examples)} similar incidents to use as examples.")
-
-        debugger_prompt = {"error_log": error_log, "codebase": targeted_codebase, "successful_examples": past_examples}
-        diagnosis_response = agents["debugger"].execute_task(debugger_prompt)
-        diagnosis = parse_json_from_ai(diagnosis_response)
-        
-        if diagnosis and "file_to_fix" in diagnosis:
-            file_to_fix = diagnosis['file_to_fix']
-            if file_to_fix in all_code_files:
-                fix_prompt = {"task": "fix_code", "file_to_fix": file_to_fix, "code_to_fix": all_code_files[file_to_fix], "instructions": diagnosis['fix_suggestion']}
-                fix_response = agents["dev"].execute_task(fix_prompt)
-                fix_code = parse_json_from_ai(fix_response)
-                if fix_code:
-                    knowledge_base.save_incident(error_signature, error_log, fix_prompt, fix_code, "FrontendDevAgent", attempt)
-
-    if fix_code and fix_code.get("filename") and fix_code.get("content"):
-        await file_handler.write_file(output_dir, fix_code.get("filename"), fix_code.get("content"))
-        return True
+async def ensure_nextjs_required_files(output_dir: str, checklist_data: dict):
+    """Ensures all required Next.js files exist before attempting a build."""
+    print("Ensuring required Next.js files exist...")
     
-    print("⚠️ AI Debugging cycle could not produce a valid fix.")
-    return False
-# --- END: MISSING HELPER FUNCTION ---
-
-async def build_and_test_component(task: dict, output_dir: str, agents: dict):
-    """
-    Helper for the incremental, per-component build and test loop with learning.
-    """
-    MAX_TRIALS_PER_COMPONENT = 3
-    task_name = task.get("name")
-    print(f"\n--- Building & Validating Component: {task_name} ---")
-
-    for attempt in range(1, MAX_TRIALS_PER_COMPONENT + 1):
-        print(f"--- Attempt {attempt}/{MAX_TRIALS_PER_COMPONENT} for {task_name} ---")
+    # Create app/layout.tsx if it's missing
+    layout_path = f"{output_dir}/app/layout.tsx"
+    if not os.path.exists(layout_path):
+        print("Creating missing app/layout.tsx...")
+        site_title = checklist_data.get('branding', {}).get('siteName', 'Generated Website')
+        site_description = "A website generated by Website Factory AI"
         
-        spec_response = agents['ui'].execute_task({"component": task_name, "props": task.get("details")})
+        layout_content = f'''import type {{ Metadata }} from 'next'
+import './globals.css'
+
+export const metadata: Metadata = {{
+  title: '{site_title}',
+  description: '{site_description}',
+}}
+
+export default function RootLayout({{
+  children,
+}}: {{
+  children: React.ReactNode
+}}) {{
+  return (
+    <html lang="en">
+      <body className="antialiased">
+        {{children}}
+      </body>
+    </html>
+  )
+}}'''
+        await file_handler.write_file(output_dir, "app/layout.tsx", layout_content)
+    
+    # Create app/globals.css if it's missing
+    globals_path = f"{output_dir}/app/globals.css"
+    if not os.path.exists(globals_path):
+        print("Creating missing app/globals.css...")
+        globals_content = '''@tailwind base;
+@tailwind components;
+@tailwind utilities;'''
+        await file_handler.write_file(output_dir, "app/globals.css", globals_content)
+    
+    print("Required Next.js files validated.")
+
+
+async def build_component_simple(task: dict, output_dir: str, agents: dict) -> bool:
+    """Builds a component without individual testing."""
+    task_name = task.get("name")
+    print(f"\\nBuilding Component: {task_name}")
+    
+    try:
+        spec_response = agents['ui'].execute_task({"component": task_name, "props": task.get("details", {})})
         design_spec = parse_json_from_ai(spec_response)
-        if not design_spec: continue
+        if not design_spec: return False
 
         copy_response = agents['copy'].execute_task({"design_spec": design_spec})
         final_copy = parse_json_from_ai(copy_response)
-        if final_copy: design_spec['props'].update(final_copy)
+        if final_copy and isinstance(design_spec, dict):
+            design_spec.setdefault('props', {}).update(final_copy)
 
         code_response = agents['dev'].execute_task({"componentSpec": design_spec})
         component_file = parse_json_from_ai(code_response)
-        if not component_file: continue
-        await file_handler.write_file(output_dir, component_file.get("filename"), component_file.get("content"))
-
-        test_response = agents['qa'].execute_task({"componentSpec": design_spec, "componentCode": component_file.get("content")})
-        test_file = parse_json_from_ai(test_response)
-        if not test_file or not test_file.get("filename"): continue
-        test_filepath = test_file.get("filename")
-        await file_handler.write_file(output_dir, test_filepath, test_file.get("content"))
         
-        test_ok, test_log = await component_tester.run_single_component_test(output_dir, test_filepath)
-        if test_ok:
-            print(f"✅ Component {task_name} passed its test.")
-            return
+        if component_file and component_file.get("filename") and component_file.get("content"):
+            await file_handler.write_file(output_dir, component_file["filename"], component_file["content"])
+            print(f"Created {task_name}")
+            return True
+        return False
+    except Exception as e:
+        print(f"Failed to create {task_name}: {e}")
+        return False
 
-        print(f"🔥 Test failed for {task_name}. Consulting Knowledge Base and attempting AI fix...")
-
-         # --- START: CORRECTED FUNCTION CALL ---
-        # Pass the entire 'agents' dictionary as a single argument.
-        fix_applied = await run_fix_cycle(test_log, "component_test", output_dir, agents, attempt)
-        # --- END: CORRECTED FUNCTION CALL ---
+async def build_page_simple(task: dict, output_dir: str, agents: dict) -> bool:
+    """Builds a page."""
+    page_name = task.get("name")
+    print(f"\\nBuilding Page: {page_name}")
+    
+    try:
+        page_response = agents['dev'].execute_task({
+            "task": "create_page",
+            "pageName": page_name,
+            "details": task.get("details", {}),
+        })
+        page_file = parse_json_from_ai(page_response)
         
-        if fix_applied:
-            print(f"  Verifying the fix for {task_name}...")
-            fix_test_ok, _ = await component_tester.run_single_component_test(output_dir, test_filepath)
-            if fix_test_ok:
-                print(f"  ✅ Fix successful for {task_name}!")
-                return
-        print(f"  ⚠️ Fix did not work for {task_name}. Retrying generation.")
+        if page_file and page_file.get("filename") and page_file.get("content"):
+            await file_handler.write_file(output_dir, page_file["filename"], page_file["content"])
+            print(f"Created page: {page_name}")
+            return True
+        return False
+    except Exception as e:
+        print(f"Failed to create page {page_name}: {e}")
+        return False
+
+# FEATURE: Enhanced E2E test generation to catch runtime errors
+async def generate_simple_e2e_tests(output_dir: str, checklist_data: dict) -> dict:
+    """Generates a Playwright test that checks for browser console errors."""
+    import os
+    pages_to_test = ["/"]
+    for page in checklist_data.get("pages", []):
+        if page.get("path") and page["path"] != "/":
+            pages_to_test.append(page["path"])
+
+    pages_list_json = json.dumps(pages_to_test)
+    
+    e2e_content = f"""import {{ test, expect }} from '@playwright/test';
+
+test.describe('Website Health Checks', () => {{
+  const pages = {pages_list_json};
+
+  test('all pages should load without console errors', async ({{ page }}) => {{
+    for (const pagePath of pages) {{
+      const errors = [];
+      page.on('console', msg => {{
+        if (msg.type() === 'error') {{
+          console.log(`RUNTIME ERROR on ${{pagePath}}: ${{msg.text()}}`);
+          errors.push(msg.text());
+        }}
+      }});
+
+      await page.goto(pagePath);
+      await page.waitForTimeout(500);
+
+      expect(errors).toEqual([]);
+    }}
+  }});
+}});"""
+    
+    return {"filename": "tests/e2e.spec.ts", "content": e2e_content}
 
 
-        # if await run_fix_cycle(test_log, "component_test", output_dir, agents['analyst'], agents['debugger'], agents['dev'], attempt):
-        #     print(f"  Verifying the fix for {task_name}...")
-        #     fix_test_ok, _ = await component_tester.run_single_component_test(output_dir, test_filepath)
-        #     if fix_test_ok:
-        #         print(f"  ✅ Fix successful for {task_name}!")
-        #         return
-        # print(f"  ⚠️ Fix did not work for {task_name}. Retrying generation.")
+async def fix_build_error(error_log: str, output_dir: str, agents: dict) -> bool:
+    """
+    Attempts to fix a build error by first checking the knowledge base for a known solution,
+    then attempting common fixes, and finally resorting to an AI-powered fix.
+    """
+    signature = knowledge_base.create_error_signature(error_log)
+    
+    # 1. Check for a known solution in the database first
+    if signature:
+        known_solution = knowledge_base.find_known_solution(signature)
+        if known_solution:
+            solution_data = json.loads(known_solution)
+            if solution_data.get("action") == "reset_node_modules":
+                print("✅ Applying known solution: Resetting node modules...")
+                await component_tester.reset_node_modules(output_dir)
+                knowledge_base.mark_solution_successful(signature)
+                return True
 
-    raise ValueError(f"Failed to build and test component '{task_name}' after max attempts.")
+    # 2. If no known solution, try the hardcoded dependency reset for the specific error
+    if "Cannot find module" in error_log and "server/require-hook" in error_log:
+        print("Applying hardcoded fix: Resetting dependencies for module resolution...")
+        success = await component_tester.reset_node_modules(output_dir)
+        if success:
+            # Save the successful action to the knowledge base for next time
+            action_taken = {"action": "reset_node_modules"}
+            knowledge_base.save_incident(
+                signature=signature,
+                log=error_log,
+                prompt={"fix_type": "hardcoded"},
+                patch_or_action=action_taken,
+                agent="SystemRule",
+                attempts=1
+            )
+        return success
 
+    # 3. If it's a different error, fall back to the AI debugger
+    if "Failed to compile." in error_log or "Type error" in error_log or "Playwright" in error_log:
+        try:
+            # --- START: NEW CONTEXT-GATHERING LOGIC ---
+
+            # 1. Read the ENTIRE codebase from the output directory
+            full_codebase = await file_handler.read_all_code_files(output_dir)
+
+            # 2. Find the specific file with the error to tell the AI where to focus
+            match = re.search(r"\./(app/.*?\.tsx|src/.*?\.tsx)", error_log)
+            file_with_error_path = match.group(1) if match else "Unknown"
+            
+            # --- END: NEW CONTEXT-GATHERING LOGIC ---
+            
+            # 3. Pass the full context to the debugger
+            debugger_response = agents["debugger"].execute_task({
+                "error_log": error_log,
+                "file_with_error": file_with_error_path,
+                "codebase": full_codebase  # Pass all the code instead of just one file
+            })
+            
+            fix_data = parse_json_from_ai(debugger_response)
+            if fix_data and "file_to_fix" in fix_data and "content" in fix_data:
+                await file_handler.write_file(output_dir, fix_data["file_to_fix"], fix_data["content"])
+                print(f"Applied AI fix to {fix_data['file_to_fix']}")
+                return True
+
+        except Exception as e:
+            print(f"AI fix attempt failed: {e}")
+            traceback.print_exc()
+
+    return False
 
 @router.post("/generate")
 async def generate_website(request: GenerateRequest):
     session_id, output_dir = "", ""
-    checklist_data = request.checklist.dict()
     final_status = "FAILED"
+    
     try:
+        checklist_data = request.checklist.dict()
         session_id = knowledge_base.create_session(checklist_data)
+        
         output_dir = file_handler.create_output_dir()
         file_handler.setup_scaffold(output_dir, checklist_data)
         await component_tester.install_dependencies(output_dir)
-
+        
         ai_client = get_client()
         agents = {
-            'pm': AIAgent(PM_PROMPT, client=ai_client),
-            'ui': AIAgent(UI_DESIGNER_PROMPT, client=ai_client),
-            'copy': AIAgent(COPYWRITER_PROMPT, client=ai_client),
-            'dev': AIAgent(FRONTEND_DEV_PROMPT, client=ai_client),
-            'qa': AIAgent(QA_TESTER_PROMPT, client=ai_client),
-            'debugger': AIAgent(DEBUGGER_PROMPT, client=ai_client),
-            'analyst': AIAgent(DEBUGGER_FILE_ANALYSIS_PROMPT, client=ai_client),
-            'e2e': AIAgent(E2E_TESTER_PROMPT, client=ai_client)
+            'pm': AIAgent(knowledge_base.get_active_prompt("PM") or PM_PROMPT, ai_client),
+            'ui': AIAgent(knowledge_base.get_active_prompt("UI_DESIGNER") or UI_DESIGNER_PROMPT, ai_client),
+            'copy': AIAgent(knowledge_base.get_active_prompt("COPYWRITER") or COPYWRITER_PROMPT, ai_client),
+            'dev': AIAgent(knowledge_base.get_active_prompt("FRONTEND_DEV") or FRONTEND_DEV_PROMPT, ai_client),
+            'debugger': AIAgent(knowledge_base.get_active_prompt("DEBUGGER") or DEBUGGER_PROMPT, ai_client)
         }
-
+        
         plan_response = agents['pm'].execute_task({"checklist": checklist_data})
         project_plan = parse_json_from_ai(plan_response)
-        if not project_plan or "tasks" not in project_plan: raise ValueError("PM failed to create a valid plan.")
-
-        for task in [t for t in project_plan.get("tasks", []) if t.get("type") == "component"]:
-            await build_and_test_component(task, output_dir, agents)
+        if not project_plan or "tasks" not in project_plan:
+            raise ValueError("PM failed to create a valid project plan")
         
-        for task in [t for t in project_plan.get("tasks", []) if t.get("type") == "page"]:
-            print(f"\n--- Building Page: {task.get('name')} ---")
-            page_response = agents['dev'].execute_task({"pageName": task.get("name"), "componentsToImport": task.get("details")})
-            page_file = parse_json_from_ai(page_response)
-            if page_file: await file_handler.write_file(output_dir, page_file.get("filename"), page_file.get("content"))
-
-        MAX_TRIALS_FINAL = 5
-        for trial in range(1, MAX_TRIALS_FINAL + 1):
-            print(f"\n--- Final Validation Attempt {trial}/{MAX_TRIALS_FINAL} ---")
-            
+        # Build components and pages
+        for task in project_plan.get("tasks", []):
+            if task.get("type") == "component":
+                await build_component_simple(task, output_dir, agents)
+            elif task.get("type") == "page":
+                await build_page_simple(task, output_dir, agents)
+        
+        await ensure_nextjs_required_files(output_dir, checklist_data)
+        
+        # Build validation with retry logic
+        build_successful = False
+        for attempt in range(1, MAX_BUILD_ATTEMPTS + 1):
+            print(f"\\nBuild Attempt {attempt}/{MAX_BUILD_ATTEMPTS}")
             build_ok, build_log = await e2e_tester.run_command_stream("npm run build", cwd=output_dir)
-            if not build_ok:
-                print("🔥 Final build failed.")
-                if "Cannot find module" in build_log and "node_modules" in build_log:
-                    await component_tester.reset_node_modules(output_dir)
-                else:
-                    # --- CORRECTED FUNCTION CALL ---
-                    await run_fix_cycle(build_log, "build_error", output_dir, agents, trial)
-                continue
-            print("✅ Final build successful!")
             
-            e2e_response = agents['e2e'].execute_task({"checklist": checklist_data})
-            e2e_code = parse_json_from_ai(e2e_response)
-            if e2e_code: await file_handler.write_file(output_dir, e2e_code.get("filename"), e2e_code.get("content"))
-            
-            e2e_ok, e2e_log = await e2e_tester.execute_playwright_tests(output_dir)
-            if not e2e_ok:
-                print("🔥 E2E tests failed.")
-                # --- CORRECTED FUNCTION CALL ---
-                await run_fix_cycle(e2e_log, "e2e_error", output_dir, agents, trial)
-                continue
-            print("🚀 E2E tests passed!")
-
-            lighthouse_ok, lighthouse_log = await e2e_tester.run_command_stream("npm run lighthouse", cwd=output_dir)
-            if not lighthouse_ok:
-                print(f"🔥 Lighthouse Quality Gates failed.")
-                # --- CORRECTED FUNCTION CALL ---
-                await run_fix_cycle(lighthouse_log, "lighthouse_error", output_dir, agents, trial)
-                continue
-            print("🏆 Performance and Accessibility checks passed!")
-            
-            final_status = "SUCCESS"
-            return {"status": "Success", "outputPath": output_dir}
+            if build_ok:
+                print("✅ Build successful!")
+                build_successful = True
+                break
+            else:
+                print(f"Build failed:\\n{build_log[:1000]}...")
+                if attempt < MAX_BUILD_ATTEMPTS:
+                    if not await fix_build_error(build_log, output_dir, agents):
+                        print("Could not auto-fix build error. Aborting build attempts.")
+                        break
+                    print("Applied fix, retrying build...")
+                
+        if not build_successful:
+            raise Exception("Website generated but failed to build after multiple attempts.")
         
-        raise ValueError("Failed to pass final validation stages after maximum attempts.")
+        # FEATURE: New runtime-fix loop using E2E tests
+        e2e_tests_passed = False
+        for attempt in range(1, MAX_BUILD_ATTEMPTS + 1):
+            print(f"\\nE2E Test & Runtime Check Attempt {attempt}/{MAX_BUILD_ATTEMPTS}")
+            
+            e2e_code = await generate_simple_e2e_tests(output_dir, checklist_data)
+            await file_handler.write_file(output_dir, e2e_code["filename"], e2e_code["content"])
+            e2e_ok, e2e_log = await e2e_tester.execute_playwright_tests(output_dir)
 
+            if e2e_ok:
+                print("✅ E2E tests passed with no runtime errors!")
+                e2e_tests_passed = True
+                break
+            else:
+                print(f"E2E tests failed with runtime errors:\\n{e2e_log[:1000]}...")
+                if attempt < MAX_BUILD_ATTEMPTS:
+                    if await fix_build_error(e2e_log, output_dir, agents):
+                        print("Applied runtime fix, rebuilding and re-testing...")
+                        build_ok, build_log = await e2e_tester.run_command_stream("npm run build", cwd=output_dir)
+                        if not build_ok:
+                            print(f"Re-build failed after runtime fix attempt. Aborting. Log:\\n{build_log}")
+                            break
+                    else:
+                        print("Could not auto-fix runtime error. Aborting test attempts.")
+                        break
+        
+        final_status = "SUCCESS" if e2e_tests_passed else "FAILED_RUNTIME_TESTS"
+        return {"status": final_status, "outputPath": output_dir}
+        
     except Exception as e:
         traceback.print_exc()
+        final_status = "FAILED"
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if session_id:

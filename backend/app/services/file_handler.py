@@ -52,19 +52,36 @@ async def write_file(output_dir: str, filename: str, content: str):
         await f.write(content)
     print(f"✅ Wrote file: {filename}")
 
+# In backend/app/services/file_handler.py
+
 async def read_all_code_files(output_dir: str) -> dict:
-    """Reads all relevant code files from the output directory into a dictionary."""
+    """
+    Reads all RELEVANT code files from the output directory into a dictionary,
+    excluding unnecessary files and directories.
+    """
     code_files = {}
-    for root, _, files in os.walk(output_dir):
-        if 'node_modules' in root:
-            continue
+    # --- START: NEW EXCLUSION LISTS ---
+    excluded_dirs = {'node_modules', '.next', '.vscode'}
+    excluded_files = {'package-lock.json'}
+    # --- END: NEW EXCLUSION LISTS ---
+
+    for root, dirs, files in os.walk(output_dir):
+        # Modify the dir list in-place to prevent os.walk from descending into excluded directories
+        dirs[:] = [d for d in dirs if d not in excluded_dirs]
+        
         for file in files:
+            if file in excluded_files:
+                continue
+
             if file.endswith((".tsx", ".ts", ".css", ".js", ".mjs", ".json")):
                 filepath = os.path.join(root, file)
                 relative_path = os.path.relpath(filepath, output_dir)
                 try:
-                    with open(filepath, "r", encoding='utf-8') as f:
+                    # Using standard open for this synchronous function part
+                    with open(filepath, "r", encoding='utf-8', errors='ignore') as f:
                         code_files[relative_path] = f.read()
-                except Exception:
+                except Exception as e:
+                    print(f"Warning: Could not read file {filepath}: {e}")
                     continue
+                    
     return code_files

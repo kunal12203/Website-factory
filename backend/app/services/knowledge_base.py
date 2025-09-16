@@ -48,6 +48,18 @@ def init_db():
                 final_output_path VARCHAR(255)
             )
         """)
+
+        cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_prompts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        role VARCHAR(100) NOT NULL,
+        prompt_text TEXT NOT NULL,
+        version INT DEFAULT 1,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY `unique_active_prompt` (`role`, `is_active`)
+    )
+""")
         conn.commit()
         cursor.close()
         conn.close()
@@ -136,13 +148,37 @@ def find_similar_incidents(signature: str, limit: int = 2) -> list:
         print(f"Database query for similar incidents failed: {err}")
         return []
 
-def save_incident(signature: str, log: str, prompt: dict, patch: dict, agent: str, attempts: int):
+# In backend/app/services/knowledge_base.py
+
+def get_active_prompt(role: str) -> str | None:
+    """Fetches the active prompt for a specific agent role from the database."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        query = "SELECT prompt_text FROM agent_prompts WHERE role = %s AND is_active = TRUE"
+        cursor.execute(query, (role,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if result:
+            print(f"✅ Loaded prompt for '{role}' from Knowledge Base.")
+            return result['prompt_text']
+        else:
+            print(f"⚠️ No active prompt found for '{role}' in Knowledge Base. Using fallback.")
+            return None
+    except mysql.connector.Error as err:
+        print(f"Database query for prompt failed: {err}")
+        return None
+    
+def save_incident(signature: str, log: str, prompt: dict, patch_or_action: dict, agent: str, attempts: int):
     """Saves a new, successfully resolved incident to the Knowledge Base."""
-    if not all([signature, log, prompt, patch]):
+    if not all([signature, log, patch_or_action]):
         return
     
-    patch_str = json.dumps(patch)
+    # This allows us to save either a code patch or an action dictionary
+    solution_str = json.dumps(patch_or_action)
     prompt_str = json.dumps(prompt)
+    
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -157,7 +193,7 @@ def save_incident(signature: str, log: str, prompt: dict, patch: dict, agent: st
             cursor.execute(query_update, (new_score, existing[0]))
         else:
             query_insert = "INSERT INTO debugging_incidents (error_signature, full_error_log, successful_fix_prompt, successful_patch, fix_agent, attempts_to_fix) VALUES (%s, %s, %s, %s, %s, %s)"
-            cursor.execute(query_insert, (signature, log, prompt_str, patch_str, agent, attempts))
+            cursor.execute(query_insert, (signature, log, prompt_str, solution_str, agent, attempts))
         
         conn.commit()
         cursor.close()
@@ -166,5 +202,55 @@ def save_incident(signature: str, log: str, prompt: dict, patch: dict, agent: st
     except mysql.connector.Error as err:
         print(f"Failed to save incident to database: {err}")
 
+    
+
+def mark_solution_successful(signature: str):
+        """Increase confidence score for a solution that worked."""
+        if not signature:
+            return
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            query = "UPDATE debugging_incidents SET confidence_score = confidence_score + 1.5, updated_at = CURRENT_TIMESTAMP WHERE error_signature = %s"
+            cursor.execute(query, (signature,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print(f"✅ Increased confidence for solution: {signature}")
+        except mysql.connector.Error as err:
+            print(f"Failed to mark solution successful: {err}")
+
+def mark_solution_failed(signature: str):
+        """Decrease confidence score for a solution that failed."""
+        if not signature:
+            return
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            query = "UPDATE debugging_incidents SET confidence_score = GREATEST(0.1, confidence_score - 0.5), updated_at = CURRENT_TIMESTAMP WHERE error_signature = %s"
+            cursor.execute(query, (signature,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print(f"⚠️ Decreased confidence for failed solution: {signature}")
+        except mysql.connector.Error as err:
+            print(f"Failed to mark solution failed: {err}")
+
+def get_failed_solutions(signature: str, limit: int = 3) -> list:
+        """Get previously failed solutions to avoid repeating them."""
+        if not signature:
+            return []
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            query = "SELECT successful_patch FROM debugging_incidents WHERE error_signature = %s AND confidence_score < 1.0 ORDER BY updated_at DESC LIMIT %s"
+            cursor.execute(query, (signature, limit))
+            results = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            return [result['successful_patch'] for result in results]
+        except mysql.connector.Error as err:
+            print(f"Database query for failed solutions failed: {err}")
+            return []
 # Initialize the database when the module is loaded
 init_db()
