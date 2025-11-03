@@ -71,18 +71,19 @@ export default function WebsiteBuilder() {
       const checklist = await convertPromptToChecklist(config);
 
       setStatus({
-        stage: GENERATION_STAGES.BUILDING,
-        message: 'Building your website components with AI agents...',
-        progress: PROGRESS_PERCENTAGES[GENERATION_STAGES.BUILDING],
+        stage: GENERATION_STAGES.PHASE1_COMPONENTS,
+        message: 'Generating all frontend components...',
+        progress: PROGRESS_PERCENTAGES[GENERATION_STAGES.PHASE1_COMPONENTS],
       });
 
       // Call the backend API to generate the website
+      // The backend will progress through all phases
       const data = await generateWebsite({ checklist });
 
       setStatus({
-        stage: GENERATION_STAGES.TESTING,
-        message: 'Testing and validating your website...',
-        progress: PROGRESS_PERCENTAGES[GENERATION_STAGES.TESTING],
+        stage: GENERATION_STAGES.FINAL_TESTING,
+        message: 'Running final tests...',
+        progress: PROGRESS_PERCENTAGES[GENERATION_STAGES.FINAL_TESTING],
       });
 
       // Simulate a small delay for better UX

@@ -11,8 +11,19 @@ export interface WebsiteConfig {
   additionalPages: string[];
 }
 
-// Generation Status
-export type GenerationStage = 'idle' | 'planning' | 'building' | 'testing' | 'complete' | 'error';
+// Generation Status (6-Phase Workflow)
+export type GenerationStage =
+  | 'idle'
+  | 'planning'
+  | 'phase1_components'
+  | 'phase2_pages'
+  | 'phase3_frontend'
+  | 'phase4_backend'
+  | 'phase5_api_testing'
+  | 'phase6_integration'
+  | 'final_testing'
+  | 'complete'
+  | 'error';
 
 export interface GenerationStatus {
   stage: GenerationStage;
