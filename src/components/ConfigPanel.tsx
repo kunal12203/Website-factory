@@ -1,13 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { WebsiteConfig } from './WebsiteBuilder';
-
-interface ConfigPanelProps {
-  config: WebsiteConfig;
-  onChange: (config: WebsiteConfig) => void;
-  disabled?: boolean;
-}
+import { ConfigPanelProps } from '@/lib/types';
 
 export function ConfigPanel({ config, onChange, disabled }: ConfigPanelProps) {
   const [newPage, setNewPage] = useState('');

@@ -1,19 +1,10 @@
 'use client';
 
-interface PromptInputProps {
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-}
+import { PromptInputProps } from '@/lib/types';
+import { EXAMPLE_PROMPTS } from '@/lib/constants';
 
 export function PromptInput({ value, onChange, disabled }: PromptInputProps) {
-  const examples = [
-    'A modern portfolio website with a hero section, project gallery, and contact form',
-    'A SaaS landing page with features, pricing, testimonials, and a signup form',
-    'A restaurant website with menu, gallery, about us, and reservation system',
-    'An e-commerce store with product listings, shopping cart, and checkout',
-    'A blog with article listings, categories, and author profiles',
-  ];
+  const examples = EXAMPLE_PROMPTS;
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl p-6 space-y-4">

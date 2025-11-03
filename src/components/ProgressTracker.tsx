@@ -1,10 +1,6 @@
 'use client';
 
-import { GenerationStatus } from './WebsiteBuilder';
-
-interface ProgressTrackerProps {
-  status: GenerationStatus;
-}
+import { ProgressTrackerProps } from '@/lib/types';
 
 export function ProgressTracker({ status }: ProgressTrackerProps) {
   const stages = [

@@ -1,19 +1,6 @@
 'use client';
 
-interface GenerationResult {
-  output_path?: string;
-  site_path?: string;
-  components_generated?: number;
-  pages?: string[];
-  total_pages?: number;
-  tests_passed?: boolean | string;
-  message?: string;
-}
-
-interface ResultDisplayProps {
-  result: GenerationResult;
-  onReset: () => void;
-}
+import { ResultDisplayProps } from '@/lib/types';
 
 export function ResultDisplay({ result, onReset }: ResultDisplayProps) {
   const hasOutput = result?.output_path || result?.site_path;
