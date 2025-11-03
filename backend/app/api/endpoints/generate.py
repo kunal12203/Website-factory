@@ -1,6 +1,7 @@
 # backend/app/api/endpoints/generate.py
 import asyncio
 import json
+import os
 import traceback
 from fastapi import APIRouter, HTTPException
 from app.models import GenerateRequest
@@ -62,9 +63,13 @@ Output must be JSON with 'filename' and 'content' keys."""
 
 DEBUGGER_FILE_ANALYSIS_PROMPT = """You are an expert at analyzing build error logs. Your task is to read an error log and identify which source code files are most likely causing the error.
 
-IMPORTANT: Look for the actual source of the problem, not just where symptoms appear.
+IMPORTANT:
+1. Look for the actual source of the problem, not just where symptoms appear
+2. You will be provided with a list of available files in the codebase - ONLY return files from this list
+3. Match file paths exactly as they appear in the available_files list
+4. If an error mentions "page.tsx", look for files ending with "page.tsx" in the available files (e.g., "app/page.tsx")
 
-Your output MUST be a JSON object with a single key "relevant_files", which is an array of strings containing the file paths."""
+Your output MUST be a JSON object with a single key "relevant_files", which is an array of strings containing the exact file paths from the available_files list."""
 
 DEBUGGER_PROMPT = """You are a Senior Debugger AI specializing in ROOT CAUSE ANALYSIS. Your critical mission is to identify and fix the UNDERLYING CAUSE of errors, not just patch symptoms.
 
@@ -89,8 +94,10 @@ INSTRUCTIONS:
 
 If you are provided with "known_solutions" from previous similar incidents, USE THEM AS REFERENCE ONLY. Do not blindly apply them - analyze if they truly address the root cause for THIS specific error. The known solutions may have been patches, not proper fixes.
 
+IMPORTANT: The codebase context you receive contains only relevant files. When specifying 'file_to_fix', use the exact file path as it appears in the codebase. If the error mentions a short filename like "page.tsx", the actual path is likely "app/page.tsx" - check the codebase for the correct path.
+
 Your output MUST be a JSON object with:
-- 'file_to_fix': The exact path of the file where the ROOT CAUSE exists
+- 'file_to_fix': The exact path of the file where the ROOT CAUSE exists (must match a file from the codebase provided)
 - 'root_cause_analysis': A detailed explanation of the underlying problem (2-3 sentences)
 - 'fix_suggestion': A clear instruction for fixing the ROOT CAUSE (not a patch)"""
 
@@ -145,7 +152,12 @@ async def run_fix_cycle(
     all_code_files = await file_handler.read_all_code_files(output_dir)
 
     # Step 1: Identify relevant files
-    analysis_response = agents["analyst"].execute_task({"error_log": error_log})
+    # Provide AI with list of available files for better decision making
+    available_files_list = list(all_code_files.keys())
+    analysis_response = agents["analyst"].execute_task({
+        "error_log": error_log,
+        "available_files": available_files_list  # Help AI see actual file paths
+    })
     analysis = parse_json_from_ai(analysis_response)
     relevant_files = analysis.get("relevant_files", []) if analysis else []
 
@@ -193,15 +205,42 @@ async def run_fix_cycle(
     print(f"🎯 ROOT CAUSE IDENTIFIED: {root_cause}")
     print(f"🔧 Proposed fix: {fix_suggestion}")
 
-    # Step 4: AI generates the fix based on root cause analysis
-    if file_to_fix not in all_code_files:
+    # Step 4: Intelligent file path matching
+    # Try exact match first, then fuzzy match if not found
+    matched_file = None
+    if file_to_fix in all_code_files:
+        matched_file = file_to_fix
+    else:
+        # Try to find files that end with the specified filename
+        # e.g., "page.tsx" should match "app/page.tsx" or "src/app/page.tsx"
+        print(f"🔍 Exact match not found. Trying intelligent path matching for: {file_to_fix}")
+        candidates = [f for f in all_code_files.keys() if f.endswith(file_to_fix)]
+
+        if len(candidates) == 1:
+            matched_file = candidates[0]
+            print(f"✓ Found match: {matched_file}")
+        elif len(candidates) > 1:
+            # Multiple matches - prefer shorter paths (more likely to be correct)
+            matched_file = min(candidates, key=len)
+            print(f"✓ Multiple matches found, using: {matched_file}")
+            print(f"   Other candidates: {', '.join(c for c in candidates if c != matched_file)}")
+        else:
+            # Try partial matching with path components
+            base_name = os.path.basename(file_to_fix)
+            candidates = [f for f in all_code_files.keys() if base_name in f]
+            if candidates:
+                matched_file = min(candidates, key=len)
+                print(f"✓ Partial match found: {matched_file}")
+
+    if not matched_file:
         print(f"⚠️ File {file_to_fix} not found in codebase.")
+        print(f"   Available files: {', '.join(list(all_code_files.keys())[:10])}")
         return False
 
     fix_prompt = {
         "task": "fix_root_cause",
-        "file_to_fix": file_to_fix,
-        "code_to_fix": all_code_files[file_to_fix],
+        "file_to_fix": matched_file,  # Use the matched file path
+        "code_to_fix": all_code_files[matched_file],
         "root_cause_analysis": root_cause,
         "fix_instructions": fix_suggestion,
         "context": f"This is attempt {attempt} to fix a {error_type} error. Focus on addressing the ROOT CAUSE, not just suppressing symptoms."
