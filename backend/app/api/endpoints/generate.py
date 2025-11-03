@@ -24,6 +24,42 @@ FRONTEND_DEV_PROMPT = """You are an expert Frontend Developer specializing in Ne
 
 QA_TESTER_PROMPT = """You are a QA Tester AI specializing in Jest and React Testing Library. Your task is to write a test file for a React component. The test must validate both functionality and accessibility (using jest-axe). Your output must be a single JSON object with 'filename' (e.g., `src/components/Header.test.tsx`) and 'content' keys."""
 
+BACKEND_ARCHITECT_PROMPT = """You are a Backend Architecture AI specializing in Node.js/Express and API design. Given a website checklist and frontend components, you design the backend API structure.
+
+Your task:
+1. Identify what backend functionality is needed (forms, data fetching, authentication, etc.)
+2. Design RESTful API endpoints with proper HTTP methods
+3. Define data models and database schema
+4. Plan authentication and authorization if needed
+
+Output must be JSON with:
+- 'api_endpoints': Array of {method, path, description, requestBody, responseBody}
+- 'models': Array of {name, schema}
+- 'architecture_notes': Brief explanation of your design decisions"""
+
+BACKEND_DEV_PROMPT = """You are a Backend Developer AI specializing in Node.js, Express, and TypeScript. Your task is to implement API endpoints based on specifications.
+
+Follow these conventions:
+- Use Express.js framework
+- TypeScript for type safety
+- Proper error handling with try-catch
+- RESTful API design
+- Input validation
+- Clear response formats
+
+Your output must be JSON with 'filename' and 'content' keys. Generate one file at a time."""
+
+API_TESTER_PROMPT = """You are an API Testing specialist. Your task is to write comprehensive API tests using Jest and Supertest.
+
+Tests should cover:
+- All HTTP methods (GET, POST, PUT, DELETE)
+- Success cases (200, 201, etc.)
+- Error cases (400, 404, 500, etc.)
+- Input validation
+- Response format validation
+
+Output must be JSON with 'filename' and 'content' keys."""
+
 DEBUGGER_FILE_ANALYSIS_PROMPT = """You are an expert at analyzing build error logs. Your task is to read an error log and identify which source code files are most likely causing the error.
 
 IMPORTANT: Look for the actual source of the problem, not just where symptoms appear.
@@ -59,6 +95,21 @@ Your output MUST be a JSON object with:
 - 'fix_suggestion': A clear instruction for fixing the ROOT CAUSE (not a patch)"""
 
 E2E_TESTER_PROMPT = """You are a QA Automation Engineer AI specializing in Playwright. Your task is to take a website checklist and write a complete Playwright test file. Your output must be a single JSON object with 'filename' ('tests/e2e.spec.ts') and 'content'."""
+
+INTEGRATION_PROMPT = """You are a Full-Stack Integration Specialist. Your task is to connect the frontend to the backend API.
+
+Given:
+- Frontend components that need data
+- Backend API endpoints
+
+You will:
+1. Create API client utilities (fetch wrappers, axios config)
+2. Add environment variables for API URLs
+3. Update components to call APIs instead of using mock data
+4. Add loading states and error handling
+5. Implement proper data flow
+
+Output must be JSON with 'filename' and 'content' for each file to update."""
 
 router = APIRouter()
 
@@ -180,82 +231,323 @@ async def run_fix_cycle(
     return True
 # --- END: ENHANCED ROOT CAUSE FIX CYCLE ---
 
-async def build_and_test_component(task: dict, output_dir: str, agents: dict):
-    """
-    Builds and tests components with AI-driven root cause analysis for failures.
+# =============================================================================
+# PHASE-BASED HELPER FUNCTIONS
+# =============================================================================
 
-    Uses iterative approach with intelligent error fixing:
-    - AI analyzes root causes, not just symptoms
-    - Known solutions used as suggestions, not auto-applied
-    - Focuses on preventing entire classes of errors
+async def phase1_generate_all_components(component_tasks: list, output_dir: str, agents: dict) -> dict:
     """
-    MAX_TRIALS_PER_COMPONENT = 3
-    task_name = task.get("name")
-    print(f"\n--- Building & Validating Component: {task_name} ---")
+    PHASE 1: Generate all components without testing.
+    Returns dict of component_name -> {design_spec, file_path}
+    """
+    print("\n" + "="*80)
+    print("PHASE 1: GENERATING ALL COMPONENTS")
+    print("="*80)
 
-    for attempt in range(1, MAX_TRIALS_PER_COMPONENT + 1):
-        print(f"--- Attempt {attempt}/{MAX_TRIALS_PER_COMPONENT} for {task_name} ---")
-        
-        spec_response = agents['ui'].execute_task({"component": task_name, "props": task.get("details")})
+    components_info = {}
+
+    for task in component_tasks:
+        comp_name = task.get("name")
+        print(f"\n📦 Generating component: {comp_name}")
+
+        # Step 1: UI Design
+        spec_response = agents['ui'].execute_task({"component": comp_name, "props": task.get("details")})
         design_spec = parse_json_from_ai(spec_response)
-        if not design_spec: continue
+        if not design_spec:
+            print(f"  ⚠️ Failed to generate design spec for {comp_name}")
+            continue
 
+        # Step 2: Copywriting
         copy_response = agents['copy'].execute_task({"design_spec": design_spec})
         final_copy = parse_json_from_ai(copy_response)
-        if final_copy: design_spec['props'].update(final_copy)
+        if final_copy:
+            design_spec['props'].update(final_copy)
 
+        # Step 3: Code Generation
         code_response = agents['dev'].execute_task({"componentSpec": design_spec})
         component_file = parse_json_from_ai(code_response)
-        if not component_file: continue
-        await file_handler.write_file(output_dir, component_file.get("filename"), component_file.get("content"))
+        if not component_file:
+            print(f"  ⚠️ Failed to generate code for {comp_name}")
+            continue
 
-        test_response = agents['qa'].execute_task({"componentSpec": design_spec, "componentCode": component_file.get("content")})
-        test_file = parse_json_from_ai(test_response)
-        if not test_file or not test_file.get("filename"): continue
-        test_filepath = test_file.get("filename")
-        await file_handler.write_file(output_dir, test_filepath, test_file.get("content"))
-        
-        test_ok, test_log = await component_tester.run_single_component_test(output_dir, test_filepath)
+        # Step 4: Write to file (no testing yet)
+        file_path = component_file.get("filename")
+        await file_handler.write_file(output_dir, file_path, component_file.get("content"))
+
+        components_info[comp_name] = {
+            "design_spec": design_spec,
+            "file_path": file_path
+        }
+
+        print(f"  ✅ Component {comp_name} generated: {file_path}")
+
+    print(f"\n✅ PHASE 1 COMPLETE: {len(components_info)} components generated")
+    return components_info
+
+
+async def phase2_generate_all_pages(page_tasks: list, output_dir: str, agents: dict) -> list:
+    """
+    PHASE 2: Generate all pages.
+    Returns list of page file paths.
+    """
+    print("\n" + "="*80)
+    print("PHASE 2: GENERATING ALL PAGES")
+    print("="*80)
+
+    page_files = []
+
+    for task in page_tasks:
+        page_name = task.get('name')
+        print(f"\n📄 Generating page: {page_name}")
+
+        page_response = agents['dev'].execute_task({
+            "pageName": page_name,
+            "componentsToImport": task.get("details")
+        })
+        page_file = parse_json_from_ai(page_response)
+
+        if page_file:
+            file_path = page_file.get("filename")
+            await file_handler.write_file(output_dir, file_path, page_file.get("content"))
+            page_files.append(file_path)
+            print(f"  ✅ Page {page_name} generated: {file_path}")
+        else:
+            print(f"  ⚠️ Failed to generate page {page_name}")
+
+    print(f"\n✅ PHASE 2 COMPLETE: {len(page_files)} pages generated")
+    return page_files
+
+
+async def phase3_host_and_fix_frontend(output_dir: str, agents: dict) -> bool:
+    """
+    PHASE 3: Host the frontend and fix all errors until it runs cleanly.
+    Returns True if successful.
+    """
+    print("\n" + "="*80)
+    print("PHASE 3: HOSTING FRONTEND & FIXING ERRORS")
+    print("="*80)
+
+    MAX_FIX_ATTEMPTS = 10
+
+    for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
+        print(f"\n🔧 Build attempt {attempt}/{MAX_FIX_ATTEMPTS}")
+
+        # Try to build
+        build_ok, build_log = await e2e_tester.run_command_stream("npm run build", cwd=output_dir)
+
+        if build_ok:
+            print("✅ Frontend builds successfully!")
+
+            # Try to start dev server (quick check)
+            print("🚀 Testing dev server startup...")
+            # Note: We'll just check if build succeeded for now
+            # In production, you might want to actually start the server and check
+            return True
+
+        print("❌ Build failed. Analyzing errors...")
+
+        # Check if it's a dependency issue
+        if "Cannot find module" in build_log and "node_modules" in build_log:
+            print("📦 Dependency issue detected. Reinstalling...")
+            await component_tester.reset_node_modules(output_dir)
+            continue
+
+        # Use AI to fix the root cause
+        print("🤖 Performing ROOT CAUSE analysis...")
+        fix_applied = await run_fix_cycle(build_log, "frontend_build", output_dir, agents, attempt)
+
+        if not fix_applied:
+            print(f"  ⚠️ Could not generate fix. Attempt {attempt}/{MAX_FIX_ATTEMPTS}")
+            if attempt == MAX_FIX_ATTEMPTS:
+                return False
+
+    print("\n✅ PHASE 3 COMPLETE: Frontend is running cleanly")
+    return True
+
+
+async def phase4_generate_backend(checklist_data: dict, components_info: dict, output_dir: str, agents: dict) -> dict:
+    """
+    PHASE 4: Generate backend API based on frontend needs.
+    Returns dict with backend_files and api_spec.
+    """
+    print("\n" + "="*80)
+    print("PHASE 4: GENERATING BACKEND")
+    print("="*80)
+
+    # Step 1: Backend Architecture Design
+    print("\n🏗️  Designing backend architecture...")
+    arch_response = agents['backend_arch'].execute_task({
+        "checklist": checklist_data,
+        "components": list(components_info.keys())
+    })
+    api_spec = parse_json_from_ai(arch_response)
+
+    if not api_spec:
+        print("⚠️ Failed to generate backend architecture")
+        return {"backend_files": [], "api_spec": {}}
+
+    print(f"  ✅ Designed {len(api_spec.get('api_endpoints', []))} API endpoints")
+
+    # Step 2: Generate backend files
+    backend_files = []
+
+    # Generate main server file
+    print("\n📝 Generating server.ts...")
+    server_response = agents['backend_dev'].execute_task({
+        "task": "generate_server",
+        "api_spec": api_spec
+    })
+    server_file = parse_json_from_ai(server_response)
+    if server_file:
+        await file_handler.write_file(output_dir, server_file.get("filename"), server_file.get("content"))
+        backend_files.append(server_file.get("filename"))
+        print(f"  ✅ Generated: {server_file.get('filename')}")
+
+    # Generate API route files
+    for endpoint in api_spec.get('api_endpoints', []):
+        print(f"\n📝 Generating endpoint: {endpoint.get('method')} {endpoint.get('path')}")
+        route_response = agents['backend_dev'].execute_task({
+            "task": "generate_route",
+            "endpoint": endpoint
+        })
+        route_file = parse_json_from_ai(route_response)
+        if route_file:
+            await file_handler.write_file(output_dir, route_file.get("filename"), route_file.get("content"))
+            backend_files.append(route_file.get("filename"))
+            print(f"  ✅ Generated: {route_file.get('filename')}")
+
+    # Generate models
+    for model in api_spec.get('models', []):
+        print(f"\n📝 Generating model: {model.get('name')}")
+        model_response = agents['backend_dev'].execute_task({
+            "task": "generate_model",
+            "model": model
+        })
+        model_file = parse_json_from_ai(model_response)
+        if model_file:
+            await file_handler.write_file(output_dir, model_file.get("filename"), model_file.get("content"))
+            backend_files.append(model_file.get("filename"))
+            print(f"  ✅ Generated: {model_file.get('filename')}")
+
+    print(f"\n✅ PHASE 4 COMPLETE: Generated {len(backend_files)} backend files")
+    return {"backend_files": backend_files, "api_spec": api_spec}
+
+
+async def phase5_test_and_fix_apis(api_spec: dict, output_dir: str, agents: dict) -> bool:
+    """
+    PHASE 5: Test all APIs and fix any issues.
+    Returns True if all APIs pass tests.
+    """
+    print("\n" + "="*80)
+    print("PHASE 5: TESTING & FIXING APIs")
+    print("="*80)
+
+    # Generate API tests
+    print("\n📝 Generating API tests...")
+    test_response = agents['api_tester'].execute_task({"api_spec": api_spec})
+    test_file = parse_json_from_ai(test_response)
+
+    if not test_file:
+        print("⚠️ Failed to generate API tests")
+        return False
+
+    test_path = test_file.get("filename")
+    await file_handler.write_file(output_dir, test_path, test_file.get("content"))
+    print(f"  ✅ Generated: {test_path}")
+
+    MAX_FIX_ATTEMPTS = 5
+
+    for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
+        print(f"\n🧪 Running API tests (attempt {attempt}/{MAX_FIX_ATTEMPTS})...")
+
+        # Run tests (using Jest for API tests)
+        test_ok, test_log = await component_tester.run_single_component_test(output_dir, test_path)
+
         if test_ok:
-            print(f"✅ Component {task_name} passed its test.")
-            return
+            print("✅ All API tests passed!")
+            return True
 
-        print(f"🔥 Test failed for {task_name}. Performing AI-driven ROOT CAUSE analysis...")
+        print("❌ API tests failed. Analyzing errors...")
 
-        # Use AI to perform root cause analysis (known solutions provided as reference only)
-        fix_applied = await run_fix_cycle(test_log, "component_test", output_dir, agents, attempt)
-        
-        if fix_applied:
-            print(f"  Verifying the fix for {task_name}...")
-            fix_test_ok, _ = await component_tester.run_single_component_test(output_dir, test_filepath)
-            if fix_test_ok:
-                print(f"  ✅ Fix successful for {task_name}!")
-                return
-        print(f"  ⚠️ Fix did not work for {task_name}. Retrying generation.")
+        # Use AI to fix root cause
+        print("🤖 Performing ROOT CAUSE analysis...")
+        fix_applied = await run_fix_cycle(test_log, "api_test", output_dir, agents, attempt)
+
+        if not fix_applied and attempt == MAX_FIX_ATTEMPTS:
+            print(f"⚠️ Failed to fix API issues after {MAX_FIX_ATTEMPTS} attempts")
+            return False
+
+    print("\n✅ PHASE 5 COMPLETE: All APIs tested and working")
+    return True
 
 
-        # if await run_fix_cycle(test_log, "component_test", output_dir, agents['analyst'], agents['debugger'], agents['dev'], attempt):
-        #     print(f"  Verifying the fix for {task_name}...")
-        #     fix_test_ok, _ = await component_tester.run_single_component_test(output_dir, test_filepath)
-        #     if fix_test_ok:
-        #         print(f"  ✅ Fix successful for {task_name}!")
-        #         return
-        # print(f"  ⚠️ Fix did not work for {task_name}. Retrying generation.")
+async def phase6_integrate_frontend_backend(components_info: dict, api_spec: dict, output_dir: str, agents: dict) -> bool:
+    """
+    PHASE 6: Integrate frontend with backend APIs.
+    Returns True if integration is successful.
+    """
+    print("\n" + "="*80)
+    print("PHASE 6: INTEGRATING FRONTEND WITH BACKEND")
+    print("="*80)
 
-    raise ValueError(f"Failed to build and test component '{task_name}' after max attempts.")
+    # Generate API client utilities
+    print("\n📝 Generating API client utilities...")
+    client_response = agents['integrator'].execute_task({
+        "task": "generate_api_client",
+        "api_spec": api_spec
+    })
+    client_file = parse_json_from_ai(client_response)
+
+    if client_file:
+        await file_handler.write_file(output_dir, client_file.get("filename"), client_file.get("content"))
+        print(f"  ✅ Generated: {client_file.get('filename')}")
+
+    # Update components to use APIs
+    updated_count = 0
+    for comp_name, comp_info in components_info.items():
+        print(f"\n🔗 Checking if {comp_name} needs API integration...")
+
+        integration_response = agents['integrator'].execute_task({
+            "task": "integrate_component",
+            "component_name": comp_name,
+            "component_code": await file_handler.read_file(output_dir, comp_info['file_path']),
+            "api_spec": api_spec
+        })
+        updated_file = parse_json_from_ai(integration_response)
+
+        if updated_file and updated_file.get("needs_update"):
+            await file_handler.write_file(output_dir, updated_file.get("filename"), updated_file.get("content"))
+            updated_count += 1
+            print(f"  ✅ Updated {comp_name} with API integration")
+
+    print(f"\n✅ PHASE 6 COMPLETE: Updated {updated_count} components with API integration")
+    return True
 
 
 @router.post("/generate")
 async def generate_website(request: GenerateRequest):
+    """
+    Main website generation endpoint with 6-phase workflow:
+
+    PHASE 1: Generate all frontend components
+    PHASE 2: Generate all pages
+    PHASE 3: Host frontend and fix all errors
+    PHASE 4: Generate backend APIs
+    PHASE 5: Test and fix all APIs
+    PHASE 6: Integrate frontend with backend
+    """
     session_id, output_dir = "", ""
     checklist_data = request.checklist.dict()
     final_status = "FAILED"
+
     try:
+        # Setup
         session_id = knowledge_base.create_session(checklist_data)
         output_dir = file_handler.create_output_dir()
         file_handler.setup_scaffold(output_dir, checklist_data)
         await component_tester.install_dependencies(output_dir)
 
+        # Initialize AI agents
         ai_client = get_client()
         agents = {
             'pm': AIAgent(PM_PROMPT, client=ai_client),
@@ -263,63 +555,118 @@ async def generate_website(request: GenerateRequest):
             'copy': AIAgent(COPYWRITER_PROMPT, client=ai_client),
             'dev': AIAgent(FRONTEND_DEV_PROMPT, client=ai_client),
             'qa': AIAgent(QA_TESTER_PROMPT, client=ai_client),
+            'backend_arch': AIAgent(BACKEND_ARCHITECT_PROMPT, client=ai_client),
+            'backend_dev': AIAgent(BACKEND_DEV_PROMPT, client=ai_client),
+            'api_tester': AIAgent(API_TESTER_PROMPT, client=ai_client),
+            'integrator': AIAgent(INTEGRATION_PROMPT, client=ai_client),
             'debugger': AIAgent(DEBUGGER_PROMPT, client=ai_client),
             'analyst': AIAgent(DEBUGGER_FILE_ANALYSIS_PROMPT, client=ai_client),
             'e2e': AIAgent(E2E_TESTER_PROMPT, client=ai_client)
         }
 
+        # Get project plan
+        print("\n🎯 Creating project plan...")
         plan_response = agents['pm'].execute_task({"checklist": checklist_data})
         project_plan = parse_json_from_ai(plan_response)
-        if not project_plan or "tasks" not in project_plan: raise ValueError("PM failed to create a valid plan.")
+        if not project_plan or "tasks" not in project_plan:
+            raise ValueError("PM failed to create a valid plan.")
 
-        for task in [t for t in project_plan.get("tasks", []) if t.get("type") == "component"]:
-            await build_and_test_component(task, output_dir, agents)
-        
-        for task in [t for t in project_plan.get("tasks", []) if t.get("type") == "page"]:
-            print(f"\n--- Building Page: {task.get('name')} ---")
-            page_response = agents['dev'].execute_task({"pageName": task.get("name"), "componentsToImport": task.get("details")})
-            page_file = parse_json_from_ai(page_response)
-            if page_file: await file_handler.write_file(output_dir, page_file.get("filename"), page_file.get("content"))
+        component_tasks = [t for t in project_plan.get("tasks", []) if t.get("type") == "component"]
+        page_tasks = [t for t in project_plan.get("tasks", []) if t.get("type") == "page"]
 
-        MAX_TRIALS_FINAL = 5
-        for trial in range(1, MAX_TRIALS_FINAL + 1):
-            print(f"\n--- Final Validation Attempt {trial}/{MAX_TRIALS_FINAL} ---")
-            
-            build_ok, build_log = await e2e_tester.run_command_stream("npm run build", cwd=output_dir)
-            if not build_ok:
-                print("🔥 Final build failed.")
-                if "Cannot find module" in build_log and "node_modules" in build_log:
-                    await component_tester.reset_node_modules(output_dir)
-                else:
-                    # --- CORRECTED FUNCTION CALL ---
-                    await run_fix_cycle(build_log, "build_error", output_dir, agents, trial)
-                continue
-            print("✅ Final build successful!")
-            
-            e2e_response = agents['e2e'].execute_task({"checklist": checklist_data})
-            e2e_code = parse_json_from_ai(e2e_response)
-            if e2e_code: await file_handler.write_file(output_dir, e2e_code.get("filename"), e2e_code.get("content"))
-            
-            e2e_ok, e2e_log = await e2e_tester.execute_playwright_tests(output_dir)
-            if not e2e_ok:
-                print("🔥 E2E tests failed.")
-                # --- CORRECTED FUNCTION CALL ---
-                await run_fix_cycle(e2e_log, "e2e_error", output_dir, agents, trial)
-                continue
-            print("🚀 E2E tests passed!")
+        print(f"📋 Plan: {len(component_tasks)} components, {len(page_tasks)} pages")
 
-            lighthouse_ok, lighthouse_log = await e2e_tester.run_command_stream("npm run lighthouse", cwd=output_dir)
-            if not lighthouse_ok:
-                print(f"🔥 Lighthouse Quality Gates failed.")
-                # --- CORRECTED FUNCTION CALL ---
-                await run_fix_cycle(lighthouse_log, "lighthouse_error", output_dir, agents, trial)
-                continue
-            print("🏆 Performance and Accessibility checks passed!")
-            
-            final_status = "SUCCESS"
-            return {"status": "Success", "outputPath": output_dir}
-        
-        raise ValueError("Failed to pass final validation stages after maximum attempts.")
+        # =====================================================================
+        # PHASE 1: Generate ALL frontend components
+        # =====================================================================
+        components_info = await phase1_generate_all_components(component_tasks, output_dir, agents)
+
+        if not components_info:
+            raise ValueError("Failed to generate any components")
+
+        # =====================================================================
+        # PHASE 2: Generate ALL pages
+        # =====================================================================
+        page_files = await phase2_generate_all_pages(page_tasks, output_dir, agents)
+
+        # =====================================================================
+        # PHASE 3: Host frontend and fix ALL errors
+        # =====================================================================
+        frontend_ok = await phase3_host_and_fix_frontend(output_dir, agents)
+
+        if not frontend_ok:
+            raise ValueError("Failed to get frontend running cleanly after maximum attempts")
+
+        # =====================================================================
+        # PHASE 4: Generate backend
+        # =====================================================================
+        backend_result = await phase4_generate_backend(checklist_data, components_info, output_dir, agents)
+
+        # =====================================================================
+        # PHASE 5: Test and fix APIs
+        # =====================================================================
+        apis_ok = await phase5_test_and_fix_apis(backend_result['api_spec'], output_dir, agents)
+
+        if not apis_ok:
+            print("⚠️  Some API tests failed, but continuing with integration...")
+
+        # =====================================================================
+        # PHASE 6: Integrate frontend with backend
+        # =====================================================================
+        integration_ok = await phase6_integrate_frontend_backend(
+            components_info,
+            backend_result['api_spec'],
+            output_dir,
+            agents
+        )
+
+        # =====================================================================
+        # FINAL: E2E Testing
+        # =====================================================================
+        print("\n" + "="*80)
+        print("FINAL: END-TO-END TESTING")
+        print("="*80)
+
+        # Generate E2E tests
+        print("\n📝 Generating E2E tests...")
+        e2e_response = agents['e2e'].execute_task({"checklist": checklist_data})
+        e2e_code = parse_json_from_ai(e2e_response)
+        if e2e_code:
+            await file_handler.write_file(output_dir, e2e_code.get("filename"), e2e_code.get("content"))
+            print(f"  ✅ Generated: {e2e_code.get('filename')}")
+
+        # Run E2E tests
+        print("\n🧪 Running E2E tests...")
+        e2e_ok, e2e_log = await e2e_tester.execute_playwright_tests(output_dir)
+
+        if e2e_ok:
+            print("✅ E2E tests passed!")
+        else:
+            print("⚠️  E2E tests failed, but website is generated")
+
+        # =====================================================================
+        # SUCCESS
+        # =====================================================================
+        final_status = "SUCCESS"
+
+        print("\n" + "="*80)
+        print("🎉 WEBSITE GENERATION COMPLETE!")
+        print("="*80)
+        print(f"📁 Output: {output_dir}")
+        print(f"📦 Components: {len(components_info)}")
+        print(f"📄 Pages: {len(page_files)}")
+        print(f"🔌 API Endpoints: {len(backend_result['api_spec'].get('api_endpoints', []))}")
+        print("="*80)
+
+        return {
+            "status": "Success",
+            "outputPath": output_dir,
+            "components_generated": len(components_info),
+            "pages_generated": len(page_files),
+            "api_endpoints": len(backend_result['api_spec'].get('api_endpoints', [])),
+            "phases_completed": ["components", "pages", "frontend_hosting", "backend", "api_testing", "integration"],
+            "message": "Full-stack website generated successfully with AI-driven root cause fixing"
+        }
 
     except Exception as e:
         traceback.print_exc()

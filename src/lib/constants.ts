@@ -28,24 +28,47 @@ export const DEFAULT_COLORS = {
   accent: '#10b981',
 } as const;
 
-// Generation Stages
+// Generation Stages (6-Phase Workflow)
 export const GENERATION_STAGES = {
   IDLE: 'idle',
   PLANNING: 'planning',
-  BUILDING: 'building',
-  TESTING: 'testing',
+  PHASE1_COMPONENTS: 'phase1_components',
+  PHASE2_PAGES: 'phase2_pages',
+  PHASE3_FRONTEND: 'phase3_frontend',
+  PHASE4_BACKEND: 'phase4_backend',
+  PHASE5_API_TESTING: 'phase5_api_testing',
+  PHASE6_INTEGRATION: 'phase6_integration',
+  FINAL_TESTING: 'final_testing',
   COMPLETE: 'complete',
   ERROR: 'error',
 } as const;
 
-// Progress Percentages
+// Progress Percentages (6-Phase Workflow)
 export const PROGRESS_PERCENTAGES = {
   [GENERATION_STAGES.IDLE]: 0,
-  [GENERATION_STAGES.PLANNING]: 10,
-  [GENERATION_STAGES.BUILDING]: 30,
-  [GENERATION_STAGES.TESTING]: 80,
+  [GENERATION_STAGES.PLANNING]: 5,
+  [GENERATION_STAGES.PHASE1_COMPONENTS]: 15,
+  [GENERATION_STAGES.PHASE2_PAGES]: 30,
+  [GENERATION_STAGES.PHASE3_FRONTEND]: 45,
+  [GENERATION_STAGES.PHASE4_BACKEND]: 60,
+  [GENERATION_STAGES.PHASE5_API_TESTING]: 75,
+  [GENERATION_STAGES.PHASE6_INTEGRATION]: 85,
+  [GENERATION_STAGES.FINAL_TESTING]: 95,
   [GENERATION_STAGES.COMPLETE]: 100,
   [GENERATION_STAGES.ERROR]: 0,
+} as const;
+
+// Phase Descriptions
+export const PHASE_DESCRIPTIONS = {
+  [GENERATION_STAGES.PLANNING]: 'Creating project plan...',
+  [GENERATION_STAGES.PHASE1_COMPONENTS]: 'Generating all frontend components...',
+  [GENERATION_STAGES.PHASE2_PAGES]: 'Generating all pages...',
+  [GENERATION_STAGES.PHASE3_FRONTEND]: 'Building and hosting frontend...',
+  [GENERATION_STAGES.PHASE4_BACKEND]: 'Generating backend APIs...',
+  [GENERATION_STAGES.PHASE5_API_TESTING]: 'Testing APIs and fixing issues...',
+  [GENERATION_STAGES.PHASE6_INTEGRATION]: 'Integrating frontend with backend...',
+  [GENERATION_STAGES.FINAL_TESTING]: 'Running end-to-end tests...',
+  [GENERATION_STAGES.COMPLETE]: 'Website generation complete!',
 } as const;
 
 // Common Pages
